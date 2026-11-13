@@ -22,20 +22,27 @@
       margin: 12px auto;
       max-width: 440px;
     }
+    h1 {
+      margin: 0 0 12px;
+      color: #8b949e;
+      font-size: 15px;
+      font-weight: 600;
+    }
     #hPa { font-size: 64px; font-weight: 700; line-height: 1.1; }
     #hPaUnit { color: #8b949e; font-size: 18px; }
     .sub-grid {
       display: flex;
-      justify-content: space-around;
+      justify-content: space-between;
+      gap: 8px;
       margin-top: 12px;
       padding-top: 12px;
       border-top: 1px solid #21262d;
       color: #8b949e;
-      font-size: 16px;
+      font-size: 14px;
     }
     canvas {
       width: 100%;
-      height: 160px;
+      height: 220px;
       display: block;
       margin-top: 16px;
     }
@@ -55,6 +62,24 @@
       font-weight: 600;
       cursor: pointer;
       flex: 1;
+      min-width: 0;
+    }
+    .chart-options {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 14px;
+      color: #8b949e;
+      font-size: 13px;
+    }
+    select {
+      background: #0d1117;
+      color: #e6edf3;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font: inherit;
     }
     button:disabled {
       background: #21262d;
@@ -75,25 +100,69 @@
       font-size: 13px;
       margin-top: 14px;
     }
+    @media (orientation: landscape) and (max-height: 600px) {
+      body { padding: 6px; }
+      .card {
+        display: grid;
+        grid-template-columns: minmax(180px, 0.8fr) minmax(0, 2fr);
+        grid-template-areas:
+          "reading chart"
+          "options chart"
+          "buttons chart"
+          "export chart"
+          "status chart";
+        gap: 0 16px;
+        max-width: none;
+        min-height: calc(100dvh - 12px);
+        margin: 0;
+        padding: 10px 14px;
+      }
+      .reading { grid-area: reading; align-self: center; }
+      .chart-options { grid-area: options; margin-top: 4px; }
+      #chart { grid-area: chart; height: calc(100dvh - 62px); min-height: 160px; margin: 0; align-self: center; }
+      .btn-group { grid-area: buttons; margin-top: 8px; }
+      .btn-group.export { grid-area: export; margin-top: 6px; }
+      #status { grid-area: status; margin-top: 6px; align-self: start; }
+      #hPa { font-size: clamp(42px, 10vh, 58px); }
+      .sub-grid { font-size: 12px; }
+      button { padding: 8px 6px; font-size: 12px; }
+    }
   </style>
 </head>
 <body>
 
   <div class="card">
-    <div id="hPa">--</div>
-    <div id="hPaUnit">hPa</div>
+    <div class="reading">
+      <h1>Manometro BLE</h1>
+      <div id="hPa">--</div>
+      <div id="hPaUnit">hPa</div>
 
-    <div class="sub-grid">
-      <div id="mmHg">-- mmHg</div>
-      <div id="psi">-- psi</div>
+      <div class="sub-grid">
+        <div id="atm">-- atm</div>
+        <div id="mmHg">-- mmHg</div>
+        <div id="psi">-- psi</div>
+      </div>
     </div>
 
     <canvas id="chart"></canvas>
+
+    <label class="chart-options" for="timeframe">
+      Intervallo
+      <select id="timeframe">
+        <option value="30000">30 secondi</option>
+        <option value="60000">1 minuto</option>
+        <option value="300000" selected>5 minuti</option>
+        <option value="900000">15 minuti</option>
+      </select>
+    </label>
 
     <div class="btn-group">
       <button id="btnConnect" class="secondary" onclick="connectBLE()">Connetti</button>
       <button id="btnPause" class="warning" onclick="togglePause()" disabled>Pausa</button>
       <button id="btnZero" onclick="sendZero()" disabled>Azzera</button>
+    </div>
+    <div class="btn-group export">
+      <button id="btnSave" onclick="saveScreenshot()">Salva screenshot</button>
     </div>
 
     <div id="status">Pronto per la connessione</div>
@@ -107,8 +176,12 @@
     let bleDevice = null;
     let zeroCharacteristic = null;
     let isPaused = false;
-    const HISTORY_MAX = 150;
     let hist = [];
+    const HISTORY_MAX = 10000;
+    const chart = document.getElementById('chart');
+
+    document.getElementById('timeframe').addEventListener('change', draw);
+    window.addEventListener('resize', draw);
 
     async function connectBLE() {
       if (!navigator.bluetooth) {
@@ -178,10 +251,11 @@
       const hPa = event.target.value.getFloat32(0, true);
 
       document.getElementById('hPa').textContent = hPa.toFixed(1);
+      document.getElementById('atm').textContent = (hPa / 1013.25).toFixed(4) + ' atm';
       document.getElementById('mmHg').textContent = (hPa * 0.750062).toFixed(1) + ' mmHg';
       document.getElementById('psi').textContent = (hPa * 0.0145038).toFixed(2) + ' psi';
 
-      hist.push(hPa);
+      hist.push({ value: hPa, time: Date.now() });
       if (hist.length > HISTORY_MAX) hist.shift();
       draw();
     }
@@ -190,7 +264,8 @@
       if (!zeroCharacteristic) return;
       try {
         await zeroCharacteristic.writeValue(new Uint8Array([1]));
-        hist = []; 
+        hist = [];
+        draw();
         setStatus('Zero impostato');
       } catch (e) {
         setStatus('Errore durante l\'azzeramento');
@@ -202,47 +277,108 @@
     }
 
     function draw() {
-      const c = document.getElementById('chart');
-      if (!c) return;
-      const x = c.getContext('2d');
-      const w = c.clientWidth;
-      c.width = w;
-      c.height = 160;
-      x.clearRect(0, 0, w, 160);
-      if (hist.length < 1) return;
+      const ctx = chart.getContext('2d');
+      const width = chart.clientWidth;
+      const height = chart.clientHeight;
+      if (!width || !height) return;
+      const pixelRatio = window.devicePixelRatio || 1;
+      chart.width = Math.round(width * pixelRatio);
+      chart.height = Math.round(height * pixelRatio);
+      ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
 
-      let mn = Infinity, mx = -Infinity;
-      hist.forEach(v => { if (v < mn) mn = v; if (v > mx) mx = v; });
-      if (mx - mn < 1e-6) { mn -= 0.5; mx += 0.5; }
-      let pad = (mx - mn) * 0.1;
-      mn -= pad; mx += pad;
+      const duration = Number(document.getElementById('timeframe').value);
+      const endTime = Date.now();
+      const startTime = endTime - duration;
+      const points = hist.filter(point => point.time >= startTime);
+      const left = 42, right = 8, top = 14, bottom = 24;
+      const plotWidth = width - left - right;
+      const plotHeight = height - top - bottom;
+      if (plotWidth <= 0 || plotHeight <= 0) return;
 
-      x.strokeStyle = '#21262d';
-      x.beginPath();
-      for (let i = 0; i < 3; i++) {
-        const y = 16 + (160 - 28) * i / 2;
-        x.moveTo(0, y);
-        x.lineTo(w, y);
+      let min = points.length ? Math.min(...points.map(point => point.value)) : 0;
+      let max = points.length ? Math.max(...points.map(point => point.value)) : 1;
+      if (max - min < 1e-6) { min -= 0.5; max += 0.5; }
+      const padding = (max - min) * 0.08;
+      min -= padding;
+      max += padding;
+      const rawStep = (max - min) / Math.max(2, Math.floor(plotHeight / 30));
+      const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+      const fraction = rawStep / magnitude;
+      const step = (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10) * magnitude;
+      const firstTick = Math.ceil(min / step) * step;
+
+      ctx.font = '11px system-ui';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#8b949e';
+      ctx.strokeStyle = '#30363d';
+      ctx.lineWidth = 1;
+      for (let tick = firstTick; tick <= max; tick += step) {
+        const y = top + (max - tick) / (max - min) * plotHeight;
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(width - right, y);
+        ctx.stroke();
+        ctx.fillText(tick.toFixed(step < 1 ? Math.min(6, Math.ceil(-Math.log10(step))) : 0), left - 6, y);
       }
-      x.stroke();
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = '#5c7085';
+      ctx.fillText('hPa', 4, 2);
+      ctx.textAlign = 'center';
+      ctx.fillText(formatTime(startTime), left, height - 18);
+      ctx.fillText(formatTime(endTime), width - right, height - 18);
 
-      x.font = '11px system-ui';
-      x.fillStyle = '#5c7085';
-      x.textAlign = 'left'; x.fillText('hPa', 4, 12);
-      x.textAlign = 'right';
-      x.fillText(mx.toFixed(1), w - 6, 16);
-      x.fillText(mn.toFixed(1), w - 6, 156);
-
-      if (hist.length < 2) return;
-      x.beginPath();
-      hist.forEach((v, i) => {
-        const px = i / (hist.length - 1) * w;
-        const py = 156 - ((v - mn) / (mx - mn)) * 140;
-        i ? x.lineTo(px, py) : x.moveTo(px, py);
+      if (points.length < 2) return;
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        const x = left + (point.time - startTime) / duration * plotWidth;
+        const y = top + (max - point.value) / (max - min) * plotHeight;
+        index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
       });
-      x.strokeStyle = '#58a6ff';
-      x.lineWidth = 2;
-      x.stroke();
+      ctx.strokeStyle = '#58a6ff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    function formatTime(timestamp) {
+      return new Date(timestamp).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function saveScreenshot() {
+      const source = chart;
+      const output = document.createElement('canvas');
+      output.width = 1200;
+      const graphHeight = Math.round(source.height * (output.width - 80) / source.width);
+      output.height = 210 + graphHeight;
+      const ctx = output.getContext('2d');
+      ctx.fillStyle = '#0d1117';
+      ctx.fillRect(0, 0, output.width, output.height);
+      ctx.fillStyle = '#e6edf3';
+      ctx.font = 'bold 34px system-ui';
+      ctx.fillText('Manometro BLE', 40, 54);
+      ctx.font = '26px system-ui';
+      ctx.fillStyle = '#8b949e';
+      ctx.fillText(
+        `${document.getElementById('hPa').textContent} hPa  |  ${document.getElementById('atm').textContent}  |  ${document.getElementById('mmHg').textContent}  |  ${document.getElementById('psi').textContent}`,
+        40, 105
+      );
+      ctx.font = '20px system-ui';
+      ctx.fillText(`Intervallo: ${document.getElementById('timeframe').selectedOptions[0].text}  |  ${new Date().toLocaleString('it-IT')}`, 40, 148);
+      ctx.drawImage(source, 40, 180, output.width - 80, graphHeight);
+      output.toBlob(blob => {
+        if (!blob) {
+          setStatus('Impossibile creare lo screenshot');
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `manometro-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }, 'image/png');
     }
   </script>
 </body>
