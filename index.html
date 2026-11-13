@@ -41,7 +41,7 @@
     }
     .btn-group {
       display: flex;
-      gap: 10px;
+      gap: 8px;
       justify-content: center;
       margin-top: 16px;
     }
@@ -50,8 +50,8 @@
       color: #fff;
       border: 0;
       border-radius: 8px;
-      padding: 12px 20px;
-      font-size: 15px;
+      padding: 10px 14px;
+      font-size: 14px;
       font-weight: 600;
       cursor: pointer;
       flex: 1;
@@ -63,6 +63,12 @@
     }
     button.secondary {
       background: #1f6feb;
+    }
+    button.warning {
+      background: #9e6a03;
+    }
+    button.paused {
+      background: #238636;
     }
     #status {
       color: #8b949e;
@@ -86,6 +92,7 @@
 
     <div class="btn-group">
       <button id="btnConnect" class="secondary" onclick="connectBLE()">Connetti</button>
+      <button id="btnPause" class="warning" onclick="togglePause()" disabled>Pausa</button>
       <button id="btnZero" onclick="sendZero()" disabled>Azzera</button>
     </div>
 
@@ -99,6 +106,7 @@
 
     let bleDevice = null;
     let zeroCharacteristic = null;
+    let isPaused = false;
     const HISTORY_MAX = 150;
     let hist = [];
 
@@ -129,6 +137,7 @@
 
         document.getElementById('btnConnect').textContent = 'Connesso';
         document.getElementById('btnConnect').disabled = true;
+        document.getElementById('btnPause').disabled = false;
         document.getElementById('btnZero').disabled = false;
         setStatus('Connesso a ManometroBLE');
       } catch (error) {
@@ -140,12 +149,32 @@
     function onDisconnected() {
       document.getElementById('btnConnect').textContent = 'Connetti';
       document.getElementById('btnConnect').disabled = false;
+      document.getElementById('btnPause').disabled = true;
+      document.getElementById('btnPause').textContent = 'Pausa';
+      document.getElementById('btnPause').className = 'warning';
       document.getElementById('btnZero').disabled = true;
+      isPaused = false;
       setStatus('Dispositivo disconnesso');
     }
 
+    function togglePause() {
+      isPaused = !isPaused;
+      const btn = document.getElementById('btnPause');
+      if (isPaused) {
+        btn.textContent = 'Riprendi';
+        btn.className = 'paused';
+        setStatus('Flusso in pausa (dati congelati)');
+      } else {
+        btn.textContent = 'Pausa';
+        btn.className = 'warning';
+        setStatus('Flusso in esecuzione');
+      }
+    }
+
     function handlePressureData(event) {
-      // Arduino invia un float IEEE-754 a 32-bit in formato Little-Endian
+      // Se siamo in pausa, scartiamo l'aggiornamento grafico/numerico
+      if (isPaused) return;
+
       const hPa = event.target.value.getFloat32(0, true);
 
       document.getElementById('hPa').textContent = hPa.toFixed(1);
@@ -161,7 +190,7 @@
       if (!zeroCharacteristic) return;
       try {
         await zeroCharacteristic.writeValue(new Uint8Array([1]));
-        hist = []; // Pulisce il grafico dopo l'azzeramento
+        hist = []; 
         setStatus('Zero impostato');
       } catch (e) {
         setStatus('Errore durante l\'azzeramento');
