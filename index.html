@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manometro BLE</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 16px;
+      text-align: center;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 14px;
+      padding: 20px 16px;
+      margin: 12px auto;
+      max-width: 440px;
+    }
+    #hPa { font-size: 64px; font-weight: 700; line-height: 1.1; }
+    #hPaUnit { color: #8b949e; font-size: 18px; }
+    .sub-grid {
+      display: flex;
+      justify-content: space-around;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #21262d;
+      color: #8b949e;
+      font-size: 16px;
+    }
+    canvas {
+      width: 100%;
+      height: 160px;
+      display: block;
+      margin-top: 16px;
+    }
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 16px;
+    }
+    button {
+      background: #238636;
+      color: #fff;
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 20px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      flex: 1;
+    }
+    button:disabled {
+      background: #21262d;
+      color: #484f58;
+      cursor: not-allowed;
+    }
+    button.secondary {
+      background: #1f6feb;
+    }
+    #status {
+      color: #8b949e;
+      font-size: 13px;
+      margin-top: 14px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <div id="hPa">--</div>
+    <div id="hPaUnit">hPa</div>
+
+    <div class="sub-grid">
+      <div id="mmHg">-- mmHg</div>
+      <div id="psi">-- psi</div>
+    </div>
+
+    <canvas id="chart"></canvas>
+
+    <div class="btn-group">
+      <button id="btnConnect" class="secondary" onclick="connectBLE()">Connetti</button>
+      <button id="btnZero" onclick="sendZero()" disabled>Azzera</button>
+    </div>
+
+    <div id="status">Pronto per la connessione</div>
+  </div>
+
+  <script>
+    const SERVICE_UUID       = '19b10000-e8f2-537e-4f6c-d104768a1214';
+    const CHAR_PRESSURE_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
+    const CHAR_ZERO_UUID     = '19b10002-e8f2-537e-4f6c-d104768a1214';
+
+    let bleDevice = null;
+    let zeroCharacteristic = null;
+    const HISTORY_MAX = 150;
+    let hist = [];
+
+    async function connectBLE() {
+      if (!navigator.bluetooth) {
+        setStatus('Web Bluetooth non supportato su questo browser. Usa Chrome.');
+        return;
+      }
+
+      try {
+        setStatus('Ricerca dispositivo...');
+        bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'ManometroBLE' }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+        setStatus('Connessione in corso...');
+        const server = await bleDevice.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+
+        const pressureChar = await service.getCharacteristic(CHAR_PRESSURE_UUID);
+        zeroCharacteristic = await service.getCharacteristic(CHAR_ZERO_UUID);
+
+        await pressureChar.startNotifications();
+        pressureChar.addEventListener('characteristicvaluechanged', handlePressureData);
+
+        document.getElementById('btnConnect').textContent = 'Connesso';
+        document.getElementById('btnConnect').disabled = true;
+        document.getElementById('btnZero').disabled = false;
+        setStatus('Connesso a ManometroBLE');
+      } catch (error) {
+        console.error(error);
+        setStatus('Connessione annullata o fallita');
+      }
+    }
+
+    function onDisconnected() {
+      document.getElementById('btnConnect').textContent = 'Connetti';
+      document.getElementById('btnConnect').disabled = false;
+      document.getElementById('btnZero').disabled = true;
+      setStatus('Dispositivo disconnesso');
+    }
+
+    function handlePressureData(event) {
+      // Arduino invia un float IEEE-754 a 32-bit in formato Little-Endian
+      const hPa = event.target.value.getFloat32(0, true);
+
+      document.getElementById('hPa').textContent = hPa.toFixed(1);
+      document.getElementById('mmHg').textContent = (hPa * 0.750062).toFixed(1) + ' mmHg';
+      document.getElementById('psi').textContent = (hPa * 0.0145038).toFixed(2) + ' psi';
+
+      hist.push(hPa);
+      if (hist.length > HISTORY_MAX) hist.shift();
+      draw();
+    }
+
+    async function sendZero() {
+      if (!zeroCharacteristic) return;
+      try {
+        await zeroCharacteristic.writeValue(new Uint8Array([1]));
+        hist = []; // Pulisce il grafico dopo l'azzeramento
+        setStatus('Zero impostato');
+      } catch (e) {
+        setStatus('Errore durante l\'azzeramento');
+      }
+    }
+
+    function setStatus(msg) {
+      document.getElementById('status').textContent = msg;
+    }
+
+    function draw() {
+      const c = document.getElementById('chart');
+      if (!c) return;
+      const x = c.getContext('2d');
+      const w = c.clientWidth;
+      c.width = w;
+      c.height = 160;
+      x.clearRect(0, 0, w, 160);
+      if (hist.length < 1) return;
+
+      let mn = Infinity, mx = -Infinity;
+      hist.forEach(v => { if (v < mn) mn = v; if (v > mx) mx = v; });
+      if (mx - mn < 1e-6) { mn -= 0.5; mx += 0.5; }
+      let pad = (mx - mn) * 0.1;
+      mn -= pad; mx += pad;
+
+      x.strokeStyle = '#21262d';
+      x.beginPath();
+      for (let i = 0; i < 3; i++) {
+        const y = 16 + (160 - 28) * i / 2;
+        x.moveTo(0, y);
+        x.lineTo(w, y);
+      }
+      x.stroke();
+
+      x.font = '11px system-ui';
+      x.fillStyle = '#5c7085';
+      x.textAlign = 'left'; x.fillText('hPa', 4, 12);
+      x.textAlign = 'right';
+      x.fillText(mx.toFixed(1), w - 6, 16);
+      x.fillText(mn.toFixed(1), w - 6, 156);
+
+      if (hist.length < 2) return;
+      x.beginPath();
+      hist.forEach((v, i) => {
+        const px = i / (hist.length - 1) * w;
+        const py = 156 - ((v - mn) / (mx - mn)) * 140;
+        i ? x.lineTo(px, py) : x.moveTo(px, py);
+      });
+      x.strokeStyle = '#58a6ff';
+      x.lineWidth = 2;
+      x.stroke();
+    }
+  </script>
+</body>
+</html>
